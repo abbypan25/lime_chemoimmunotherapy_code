@@ -1,0 +1,9 @@
+# Environment used to generate the results in the manuscript (Python 3.12.2)
+numpy==1.26.4
+pandas==2.3.3
+scipy==1.12.0
+scikit-learn==1.8.0
+xgboost==3.0.5
+shap==0.48.0
+joblib==1.4.2
+matplotlib==3.10.6
