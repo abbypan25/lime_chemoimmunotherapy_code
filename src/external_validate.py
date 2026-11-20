@@ -4,15 +4,15 @@ The fitted pipeline (feature filtering, imputation, scaling, selection and class
 Youden cutoff were fixed on the discovery cohort; nothing is re-fitted or re-calibrated here.
 
 Usage (fs_transformers.py must be in the same directory as this script):
-    python external_validate.py --x ec_ext_mut_all.csv --y ec_ext_set_label.csv \
-        --out models_RvsNR/mut_0_ec_set_label/ --prefix ec_external --name EC
-    python external_validate.py --x gc_ext_mut_all.csv --y gc_ext_set_label.csv \
-        --out models_RvsNR/mut_0_gc_set_label/ --prefix gc_external --name GC
+    python external_validate.py --x my_ext_mut_matrix.csv --y my_ext_labels.csv \
+        --out models_RvsNR/mut_<label file name>/ --prefix my_external --name MyCohort
+    (file names are placeholders; the input files are not part of the repository)
 
 Inputs
     --x      external modification-rate matrix: column "key" (site, same format as the training file) and
-             one "mutation_rate_<sample>" column per sample
-    --y      external labels: columns test_id, best_response (CR/PR = responder = 1, SD/PD = non-responder = 0)
+             one "mutation_rate_<sample>" column per sample. Only the final selected features of the model
+             (F_final_features.csv) are required; other sites may be absent and are ignored by the model.
+    --y      external labels: columns patient_id, best_response (CR/PR = responder = 1, SD/PD = non-responder = 0)
     --out    directory written by RvsNR_model.py (parts C + F) that holds
              F_final_<model>.joblib, F_feature_columns.txt, F_final_features.csv, F_final_<model>_cutoff.txt
 Options
@@ -73,20 +73,22 @@ X = m[[c for c in m.columns if c.startswith("mutation_rate_")]].T
 X.index = X.index.str.replace("mutation_rate_", "", regex=False)
 print("External matrix:", X.shape)
 
-matched = set(cols) & set(X.columns)
-print(f"Matched training sites: {len(matched)} / {len(cols)} ({len(matched) / len(cols):.2%})")
 missing_final = [f for f in final_features if f not in X.columns]
-print("Final features missing in external set:", len(missing_final))
+print(f"Final {a.model} features present in external set: {len(final_features) - len(missing_final)} / {len(final_features)}")
 if missing_final:
     raise ValueError(f"Final {a.model} features missing: {missing_final}")
 
-# sites absent from the external matrix become NaN and are imputed by the fitted pipeline (training medians)
+# The fitted pipeline expects the full training column layout. Sites other than the final features are filled
+# with NaN (imputed with training medians and then discarded by the feature selection), so they do not affect
+# the prediction; only the final features carry the external data.
 X = X.reindex(columns=cols).apply(pd.to_numeric, errors="coerce")
-print("Aligned external matrix:", X.shape, "| NaN in the final features:",
-      int(X[final_features].isna().sum().sum()), "/", X[final_features].size)
+print("Missing values in the final features:", int(X[final_features].isna().sum().sum()), "/", X[final_features].size)
 
 # ---------- 3. labels ----------
-lab = pd.read_csv(a.y, encoding="utf-8-sig").set_index("test_id")
+lab = pd.read_csv(a.y, encoding="utf-8-sig")
+if "patient_id" not in lab.columns:
+    sys.exit(f"{a.y} has no 'patient_id' column (columns: {list(lab.columns)})")
+lab = lab.set_index("patient_id")
 lab.index = lab.index.astype(str).str.strip()
 lab["best_response"] = lab["best_response"].astype(str).str.strip().str.upper()
 lab["label"] = lab["best_response"].map({"CR": 1, "PR": 1, "SD": 0, "PD": 0})

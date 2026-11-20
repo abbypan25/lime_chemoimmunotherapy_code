@@ -31,10 +31,17 @@ the same scikit-learn and XGBoost versions that were used to train it.
 ## Input formats
 
 * **Modification-rate matrix** (`RVSNR_MUT_FILE`, `--x`): CSV with a `key` column (modification site) and one
-  `mutation_rate_<sample>` column per sample.
-* **Label file** (3rd argument, `--y`): CSV with `test_id` and `best_response`. `CR`/`PR` = responder (1),
-  `SD`/`PD` = non-responder (0); RECIST v1.1.
-* Optional abundance input (`read` feature set): CSV with a `Geneid` column and one RPM column per sample.
+  `mutation_rate_<sample>` column per sample, where `<sample>` is the `patient_id`. Other columns (`chr`, `site`,
+  `base`, or `depth_<sample>`) are ignored, so tables with or without depth columns both work.
+  For external validation (`--x`) the matrix only needs to contain the final selected features of the model
+  (`F_final_features.csv`); the script stops with the list of missing features if any of them is absent.
+* **Label file** (3rd argument): CSV with the sample-ID column (`patient_id`; change with `RVSNR_ID_COL`) and
+  `best_response`. `CR`/`PR` = responder (1), `SD`/`PD` = non-responder (0); RECIST v1.1. The clinical table of
+  each discovery cohort can be used directly. The IDs must match the `<sample>` part of the matrix columns; the
+  script stops with a message if they do not.
+* **External label file** (`external_validate.py --y`): CSV with `patient_id` and `best_response`.
+* Optional abundance input (`read` feature set): CSV with a `Geneid` column and one RPM column per sample
+  (column names = `patient_id`).
 
 ## Pipeline (fit inside every cross-validation fold, training rows only)
 
@@ -51,12 +58,12 @@ Run Part C first: `best` is read from its output, and the permutation test takes
 ```bash
 cd src
 # 1. Discovery cohort: repeated splits (C), final model (F), SHAP (S), permutation test (P)
-RVSNR_DATA_DIR=../data RVSNR_MUT_FILE=ec_all_mut_filtered.csv \
-    python RvsNR_model.py CFPS mut ec_set_label.csv
+RVSNR_DATA_DIR=../data RVSNR_MUT_FILE=<mutation_matrix.csv> \
+    python RvsNR_model.py CFPS mut <label_file.csv>
 
 # 2. External validation with the locked model and cutoff
-python external_validate.py --x ../data/ec_ext_mut_all.csv --y ../data/ec_ext_set_label.csv \
-    --out ../data/models_RvsNR/mut_ec_set_label/ --prefix ec_external --name EC
+python external_validate.py --x <external_mutation_matrix.csv> --y <external_label_file.csv> \
+    --out ../data/models_RvsNR/mut_<label_file>/ --prefix ec_external --name EC
 ```
 
 Run the same commands with the GC files for gastric cancer. Parts can be combined freely (for example `S` alone
@@ -68,7 +75,8 @@ re-runs SHAP from the saved final model).
 |---|---|---|
 | `RVSNR_DATA_DIR` | `./data/` | input directory |
 | `RVSNR_OUT_BASE` | `<data dir>/models_RvsNR/` | output base; results go to `<feature set>_<label>/` |
-| `RVSNR_MUT_FILE` / `RVSNR_READ_FILE` | see script | modification / abundance input file |
+| `RVSNR_MUT_FILE` / `RVSNR_READ_FILE` | none (required) | modification / abundance input file name, looked up in `RVSNR_DATA_DIR` |
+| `RVSNR_ID_COL` | `patient_id` | sample-ID column of the label file |
 | `RVSNR_N_SPLITS_C` | 50 | repeated splits in Part C |
 | `RVSNR_N_PERM` | 100 | label permutations in Part P |
 | `RVSNR_PERM_SPLITS` | 50 | splits per permutation (must be ≤ `RVSNR_N_SPLITS_C`) |
@@ -97,13 +105,10 @@ the mean out-of-sample score over the splits in which the sample was held out.
 ```bash
 cd src
 python make_example_data.py                      # writes ../example_data/
-RVSNR_DATA_DIR=../example_data RVSNR_MUT_FILE=ec_all_mut_filtered.csv RVSNR_N_SPLITS_C=2 \
+RVSNR_DATA_DIR=../example_data RVSNR_MUT_FILE=example_mut_matrix.csv RVSNR_N_SPLITS_C=2 \
 RVSNR_N_PERM=2 RVSNR_PERM_SPLITS=2 RVSNR_FINAL_MODELS=RF RVSNR_N_JOBS=4 \
-    python RvsNR_model.py CFPS mut ec_set_label.csv
+    python RvsNR_model.py CFPS mut example_labels.csv
 ```
 
 The full grid search is computationally heavy even on small inputs; expect this test to take several minutes.
 
-## License and citation
-
-Add a LICENSE file of your choice and the citation of the associated article here.

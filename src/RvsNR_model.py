@@ -50,16 +50,20 @@ Parts (1st argument, any combination, default "CFPS"):
        P_null_distribution.csv / P_permutation_test.csv / P_null_hist.png/.pdf
 
 Feature sets (2nd argument, default "mut"):
-    mut            <RVSNR_MUT_FILE>, mutation_rate_* columns
+    mut            <RVSNR_MUT_FILE>: key column + mutation_rate_<sample> columns (other columns such as chr/site/base
+                   and depth_<sample> are ignored, so tables with or without depth columns both work)
     read           <RVSNR_READ_FILE>, log2(RPM + 1)
     read_f<R>_<F>  read + keep genes with RPM >= R in >= F of the training samples (fit inside each fold)
-3rd argument: label file (default 0_ec_set_label.csv); best_response CR/PR = R, SD/PD = NR.
+3rd argument: label file (required; no default) with the sample-ID column (RVSNR_ID_COL, default
+patient_id) and best_response; CR/PR = R, SD/PD = NR. Sample IDs must match the <sample> part of the
+mutation_rate_<sample> columns (or the column names of the expression file).
 
 Environment variables:
     RVSNR_DATA_DIR      input directory (default ./data/)
     RVSNR_OUT_BASE      output base (default <data dir>/models_RvsNR/); output dir <feature set>_<label>/
-    RVSNR_MUT_FILE      mutation file (default 4_ec_all_mut_filtered.csv)
-    RVSNR_READ_FILE     expression file (default 4_ec_all_rpm_filtered.csv)
+    RVSNR_MUT_FILE      mutation matrix file, relative to RVSNR_DATA_DIR (required for feature set "mut"; no default)
+    RVSNR_READ_FILE     expression (RPM) file, relative to RVSNR_DATA_DIR (required for "read" feature sets; no default)
+    RVSNR_ID_COL        sample-ID column of the label file (default patient_id)
     RVSNR_N_SPLITS_C    splits in Part C (default 50)
     RVSNR_N_PERM        permutations in Part P (default 100)
     RVSNR_PERM_SPLITS   splits per permutation (default 50; must be <= RVSNR_N_SPLITS_C)
@@ -69,11 +73,11 @@ Environment variables:
     RVSNR_SHAP_TOP      features shown in the SHAP plots (default 20)
 
 Usage (needs fs_transformers.py in the same directory):
-    python RvsNR_model.py CFPS mut 0_ec_set_label.csv        # C, then F/S/P for the best model
-    python RvsNR_model.py S mut 0_ec_set_label.csv           # SHAP only, from the saved final model
-    RVSNR_MUT_FILE=4_gc_all_mut_filtered.csv python RvsNR_model.py CFS mut 0_gc_set_label.csv
-    RVSNR_N_PERM=200 RVSNR_FINAL_MODELS=RF python RvsNR_model.py P mut 0_ec_set_label.csv
-    RVSNR_READ_FILE=4_gc_all_rpm_filtered.csv python RvsNR_model.py CFPS read 0_gc_set_label.csv
+    (file names below are placeholders; the input files are not part of the repository)
+    RVSNR_MUT_FILE=my_mut_matrix.csv python RvsNR_model.py CFPS mut my_labels.csv   # C, then F/S/P for the best model
+    RVSNR_MUT_FILE=my_mut_matrix.csv python RvsNR_model.py S mut my_labels.csv      # SHAP only, from the saved final model
+    RVSNR_MUT_FILE=my_mut_matrix.csv RVSNR_N_PERM=200 RVSNR_FINAL_MODELS=RF python RvsNR_model.py P mut my_labels.csv
+    RVSNR_READ_FILE=my_rpm_matrix.csv python RvsNR_model.py CFPS read my_labels.csv
 Run C first: "best" is read from C's output, and P takes its observed AUCs from it.
 """
 import os, sys, time, warnings, tempfile, datetime
@@ -106,7 +110,12 @@ D = os.path.join(os.environ.get("RVSNR_DATA_DIR", "./data/"), "")      # trailin
 PARTS = sys.argv[1] if len(sys.argv) > 1 else "CFPS"
 FEATURE_SET = sys.argv[2] if len(sys.argv) > 2 else "mut"
 assert FEATURE_SET in ("mut", "read") or FEATURE_SET.startswith("read_f"), FEATURE_SET
-LABEL_FILE = sys.argv[3] if len(sys.argv) > 3 else "0_ec_set_label.csv"
+if len(sys.argv) < 4:
+    sys.exit("usage: RVSNR_MUT_FILE=<mutation matrix> python RvsNR_model.py <parts> mut <label file>\n"
+             "       RVSNR_READ_FILE=<RPM matrix> python RvsNR_model.py <parts> read <label file>\n"
+             "(input files are looked up in RVSNR_DATA_DIR, default ./data/; see the docstring)")
+LABEL_FILE = sys.argv[3]
+ID_COL = os.environ.get("RVSNR_ID_COL", "patient_id")
 EXPR = tuple(map(float, FEATURE_SET[len("read_f"):].split("_"))) if FEATURE_SET.startswith("read_f") else None
 OUT = os.path.join(os.environ.get("RVSNR_OUT_BASE", D + "models_RvsNR/"),
                    f"{FEATURE_SET}_{os.path.splitext(os.path.basename(LABEL_FILE))[0]}", "")   # ends with "/"
@@ -123,15 +132,26 @@ N_FEAT = [5, 10, 15, 20, 25, 30, 35, 40]
 
 # ---------- data ----------
 if FEATURE_SET == "mut":
-    DATA_FILE = os.environ.get("RVSNR_MUT_FILE", "4_ec_all_mut_filtered.csv")
+    DATA_FILE = os.environ.get("RVSNR_MUT_FILE") or sys.exit("set RVSNR_MUT_FILE to the mutation matrix file name")
     mut = pd.read_csv(D + DATA_FILE).set_index("key")
+    # only the mutation_rate_<sample> columns are used; chr/site/base and any depth_<sample> columns are ignored
     X = mut[[c for c in mut.columns if c.startswith("mutation_rate_")]].T
     X.index = X.index.str.replace("mutation_rate_", "", regex=False)
 else:
-    DATA_FILE = os.environ.get("RVSNR_READ_FILE", "4_ec_all_rpm_filtered.csv")
+    DATA_FILE = os.environ.get("RVSNR_READ_FILE") or sys.exit("set RVSNR_READ_FILE to the expression (RPM) file name")
     X = np.log2(pd.read_csv(D + DATA_FILE).set_index("Geneid").T + 1)   # samples x genes, RPM
-clin = pd.read_csv(D + LABEL_FILE, encoding="utf-8-sig").set_index("test_id")
+lab = pd.read_csv(D + LABEL_FILE, encoding="utf-8-sig")
+if ID_COL not in lab.columns:
+    sys.exit(f"{LABEL_FILE} has no '{ID_COL}' column (columns: {list(lab.columns)}); set RVSNR_ID_COL")
+clin = lab.set_index(lab[ID_COL].astype(str).str.strip())
+X.index = X.index.astype(str).str.strip()
 y = clin.best_response.map({"CR": 1, "PR": 1, "SD": 0, "PD": 0}).dropna().astype(int)   # 1 = R, 0 = NR
+if y.index.has_duplicates or X.index.has_duplicates:
+    sys.exit("duplicated sample IDs in the label file or in the feature file")
+absent = y.index.difference(X.index)
+if len(absent):
+    sys.exit(f"{len(absent)} labelled samples are not in {DATA_FILE} (e.g. {list(absent[:5])}); "
+             f"check that sample IDs match ({ID_COL} vs. the column names)")
 X = X.loc[y.index]
 keys = X.columns.values
 
@@ -494,7 +514,7 @@ Part P             : {N_PERM} label permutations x {PERM_SPLITS} splits for the 
 
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
-    assert PERM_SPLITS <= N_SPLITS or "C" not in PARTS, "RVSNR_PERM_SPLITS must be <= RVSNR_N_SPLITS_C"
+    assert PERM_SPLITS <= N_SPLITS or not ("C" in PARTS and "P" in PARTS), "RVSNR_PERM_SPLITS must be <= RVSNR_N_SPLITS_C"
     print(f"{DATA_FILE} + {LABEL_FILE} -> {OUT}", flush=True)
     print(f"samples {len(y)} (R {y.sum()} / NR {(y == 0).sum()}), features {X.shape[1]}, parts {PARTS}", flush=True)
     write_prespec()
